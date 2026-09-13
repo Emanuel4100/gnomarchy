@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "emanuel.gnomarchy",
+  "name": "Gnomarchy",
+  "version": "1.0.0",
+  "author": "Emanuel4100",
+  "license": "MIT",
+  "description": "GNOME-feel dock and dynamic workspaces for Omarchy 4: auto-hide GNOME Dash-style dock with pinned/running apps, and a service that keeps one spare workspace past the highest occupied one.",
+  "homepage": "https://github.com/Emanuel4100/gnomarchy",
+  "repository": "https://github.com/Emanuel4100/gnomarchy",
+  "kinds": ["panel", "service"],
+  "keepLoaded": true,
+  "entryPoints": { "panel": "Dock.qml", "service": "WorkspaceService.qml" }
+}

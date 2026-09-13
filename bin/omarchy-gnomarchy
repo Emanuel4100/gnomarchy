@@ -1,0 +1,173 @@
+#!/bin/bash
+
+# omarchy:summary=Configure the Gnomarchy dock
+# omarchy:args=get <key> | set <key> <value> | toggle <key> | pin <desktop-id> | unpin <desktop-id> | set-pinned '<json-array>'
+# omarchy:examples=omarchy-gnomarchy get iconSize | omarchy-gnomarchy pin org.gnome.Nautilus | omarchy-gnomarchy toggle enabled
+
+set -euo pipefail
+
+REAL_SOURCE="$(readlink -f "${BASH_SOURCE[0]}")"
+PLUGIN_DIR="$(cd "$(dirname "$REAL_SOURCE")/.." && pwd)"
+CONFIG="$PLUGIN_DIR/settings.json"
+
+usage() {
+  cat <<USAGE
+Usage: omarchy-gnomarchy <command> [args...]
+
+  get <key>              Print the current value of a setting
+  set <key> <value>      Set a scalar setting
+  toggle <key>           Flip a boolean setting (enabled or pinned)
+  pin <desktop-id>       Add a desktop-entry id to pinnedApps (no-op if present)
+  unpin <desktop-id>     Remove a desktop-entry id from pinnedApps
+  set-pinned <json>      Replace pinnedApps wholesale with a JSON array of ids
+
+Scalar keys: enabled, pinned, mode, iconSize, revealPx, hideDelayMs, showAppsButton
+
+Settings live entirely in this plugin's own $CONFIG -
+nothing outside the plugin's own folder is ever touched.
+USAGE
+}
+
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
+default_for() {
+  case "$1" in
+    enabled) echo true ;;
+    pinned) echo false ;;
+    mode) echo always ;;
+    iconSize) echo 48 ;;
+    revealPx) echo 6 ;;
+    hideDelayMs) echo 500 ;;
+    showAppsButton) echo true ;;
+    pinnedApps) echo '["Alacritty","brave-origin","org.gnome.Nautilus"]' ;;
+    *) fail "unknown key: $1" ;;
+  esac
+}
+
+ensure_config() {
+  [[ -f $CONFIG ]] || echo '{}' >"$CONFIG"
+}
+
+cmd_get() {
+  local key="${1:-}"
+  [[ -n $key ]] || { usage; exit 1; }
+  if [[ ! -f $CONFIG ]]; then
+    default_for "$key"
+    return
+  fi
+  local value
+  value=$(jq -r --arg k "$key" 'if has($k) and .[$k] != null then (.[$k] | if type == "array" or type == "object" then tojson else tostring end) else " " end' "$CONFIG")
+  if [[ $value == " " ]]; then
+    default_for "$key"
+  else
+    echo "$value"
+  fi
+}
+
+write_value() {
+  local key="$1" jsonValue="$2" tmp
+  ensure_config
+  tmp=$(mktemp "$PLUGIN_DIR/.settings.json.XXXXXX")
+  jq --arg k "$key" --argjson v "$jsonValue" '.[$k] = $v' "$CONFIG" >"$tmp"
+  mv "$tmp" "$CONFIG"
+}
+
+cmd_set() {
+  local key="${1:-}" raw="${2:-}" jsonValue
+  [[ -n $key && -n $raw ]] || { usage; exit 1; }
+  case "$key" in
+    enabled | pinned | showAppsButton)
+      [[ $raw == "true" || $raw == "false" ]] || fail "value must be true or false"
+      jsonValue="$raw"
+      ;;
+    mode)
+      [[ $raw == "always" || $raw == "fullscreen" ]] || fail "mode must be always or fullscreen"
+      jsonValue="\"$raw\""
+      ;;
+    iconSize | revealPx | hideDelayMs)
+      [[ $raw =~ ^[0-9]+$ ]] || fail "value must be a non-negative integer"
+      jsonValue="$raw"
+      ;;
+    *)
+      fail "unknown key: $key (use pin/unpin/set-pinned for pinnedApps)"
+      ;;
+  esac
+  write_value "$key" "$jsonValue"
+}
+
+cmd_toggle() {
+  local key="${1:-}"
+  [[ $key == "enabled" || $key == "pinned" ]] || fail "toggle only supports enabled or pinned"
+  if [[ "$(cmd_get "$key")" == "true" ]]; then
+    write_value "$key" "false"
+  else
+    write_value "$key" "true"
+  fi
+}
+
+current_pinned() {
+  cmd_get "pinnedApps"
+}
+
+cmd_pin() {
+  local id="${1:-}"
+  [[ -n $id ]] || fail "usage: omarchy-gnomarchy pin <desktop-id>"
+  local next
+  next=$(jq -n --argjson cur "$(current_pinned)" --arg id "$id" \
+    '$cur + (if ($cur | index($id)) then [] else [$id] end)')
+  write_value "pinnedApps" "$next"
+}
+
+cmd_unpin() {
+  local id="${1:-}"
+  [[ -n $id ]] || fail "usage: omarchy-gnomarchy unpin <desktop-id>"
+  local next
+  next=$(jq -n --argjson cur "$(current_pinned)" --arg id "$id" \
+    '$cur - [$id]')
+  write_value "pinnedApps" "$next"
+}
+
+cmd_set_pinned() {
+  local raw="${1:-}"
+  [[ -n $raw ]] || fail "usage: omarchy-gnomarchy set-pinned '<json-array>'"
+  echo "$raw" | jq -e 'type == "array"' >/dev/null || fail "value must be a JSON array"
+  write_value "pinnedApps" "$raw"
+}
+
+case "${1:-}" in
+  get)
+    shift
+    cmd_get "$@"
+    ;;
+  set)
+    shift
+    cmd_set "$@"
+    ;;
+  toggle)
+    shift
+    cmd_toggle "$@"
+    ;;
+  pin)
+    shift
+    cmd_pin "$@"
+    ;;
+  unpin)
+    shift
+    cmd_unpin "$@"
+    ;;
+  set-pinned)
+    shift
+    cmd_set_pinned "$@"
+    ;;
+  -h | --help | "")
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

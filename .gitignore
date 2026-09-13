@@ -1,0 +1,9 @@
+# Per-user runtime state, generated on first use - never shipped in the repo.
+settings.json
+.settings.json.*
+
+# Editor/ad-hoc backups.
+*.bak
+*.bak.*
+*.orig
+*.rej
