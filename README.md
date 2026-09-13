@@ -112,6 +112,28 @@ omarchy-gnomarchy set-pinned '<json-array-of-ids>'
 | `showAppsButton` | `true` / `false` | Show the trailing "show applications" button |
 | `pinnedApps` | JSON array of desktop-entry ids | Favorites, in order |
 
+### Also reachable from the Omarchy menu
+
+There's no packaged way for a plugin to install a menu entry for itself —
+Omarchy's menu is defined by two JSONC files merged at load,
+`default/omarchy/omarchy-menu.jsonc` (shipped) and
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` (yours), and nothing
+auto-writes to the latter. Paste this into your own extensions file for a
+`SUPER+SPACE → Trigger → Toggle → Dock` entry that enables/disables the
+whole plugin (both halves — dock and workspace service together):
+
+```jsonc
+"trigger.toggle.dock": {"icon":"󰀻","label":"Dock",
+  "action":"if omarchy plugin list --json | jq -e '.[] | select(.id==\"emanuel.gnomarchy\") | .enabled' >/dev/null 2>&1; then omarchy plugin disable emanuel.gnomarchy; else omarchy plugin enable emanuel.gnomarchy; fi"}
+```
+
+No `checked` field, matching every other `trigger.toggle.*` entry's shape —
+that category is consistently checkmark-free even for stateful toggles
+(nightlight, notifications, top-bar visibility). Takes effect immediately,
+no `omarchy-restart-shell` needed (verified live: `omarchy plugin
+enable`/`disable` mounts/unmounts both the `keepLoaded` panel and service
+in the already-running shell).
+
 ## Recommended extras (not automated)
 
 Two more GNOME-feel touches this plugin doesn't apply for you — a plugin
