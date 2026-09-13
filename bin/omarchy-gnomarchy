@@ -1,14 +1,23 @@
 #!/bin/bash
 
-# omarchy:summary=Configure the Gnomarchy dock
-# omarchy:args=get <key> | set <key> <value> | toggle <key> | pin <desktop-id> | unpin <desktop-id> | set-pinned '<json-array>'
-# omarchy:examples=omarchy-gnomarchy get iconSize | omarchy-gnomarchy pin org.gnome.Nautilus | omarchy-gnomarchy toggle enabled
+# omarchy:summary=Configure the Gnomarchy dock, or toggle GNOME mode as a whole
+# omarchy:args=get <key> | set <key> <value> | toggle <key> | pin <desktop-id> | unpin <desktop-id> | set-pinned '<json-array>' | mode on|off|toggle|status
+# omarchy:examples=omarchy-gnomarchy get iconSize | omarchy-gnomarchy mode toggle | omarchy-gnomarchy toggle enabled
 
 set -euo pipefail
 
 REAL_SOURCE="$(readlink -f "${BASH_SOURCE[0]}")"
 PLUGIN_DIR="$(cd "$(dirname "$REAL_SOURCE")/.." && pwd)"
 CONFIG="$PLUGIN_DIR/settings.json"
+PLUGIN_ID="emanuel.gnomarchy"
+
+# Presence of this file is GNOME mode's single source of truth - checked
+# both here (mode status/toggle) and by looknfeel.lua's conditional block
+# (extras/looknfeel-gnome.lua), so a real Hyprland config reload respects
+# whatever mode was last set instead of always reapplying GNOME values.
+MODE_MARKER="$PLUGIN_DIR/.gnome-mode-on"
+GNOME_BUTTON_LAYOUT="appmenu:minimize,maximize,close"
+DEFAULT_BUTTON_LAYOUT="appmenu:close"
 
 usage() {
   cat <<USAGE
@@ -20,11 +29,18 @@ Usage: omarchy-gnomarchy <command> [args...]
   pin <desktop-id>       Add a desktop-entry id to pinnedApps (no-op if present)
   unpin <desktop-id>     Remove a desktop-entry id from pinnedApps
   set-pinned <json>      Replace pinnedApps wholesale with a JSON array of ids
+  mode on|off|toggle     Flip every GNOME-feel piece together: the plugin
+                         itself (dock + workspace service), edge-to-edge
+                         Hyprland tiling, and GTK header-bar buttons
+  mode status            Print "on" or "off"
 
 Scalar keys: enabled, pinned, mode, iconSize, revealPx, hideDelayMs, showAppsButton
 
 Settings live entirely in this plugin's own $CONFIG -
-nothing outside the plugin's own folder is ever touched.
+nothing outside the plugin's own folder is ever touched, except by
+'mode', which deliberately reaches outside it: Hyprland's live config
+(via 'hyprctl eval', reload-safe through \$MODE_MARKER) and the
+'org.gnome.desktop.wm.preferences button-layout' gsetting.
 USAGE
 }
 
@@ -137,6 +153,48 @@ cmd_set_pinned() {
   write_value "pinnedApps" "$raw"
 }
 
+# --------------------------------------------------------------- mode
+
+apply_hyprland_gnome() {
+  hyprctl eval 'hl.config({general = {gaps_in = 0, gaps_out = 0, border_size = 0}})' >/dev/null 2>&1 || true
+  hyprctl eval 'hl.config({decoration = {rounding = 12}})' >/dev/null 2>&1 || true
+}
+
+apply_hyprland_default() {
+  hyprctl eval 'hl.config({general = {gaps_in = 5, gaps_out = 10, border_size = 2}})' >/dev/null 2>&1 || true
+  hyprctl eval 'hl.config({decoration = {rounding = 0}})' >/dev/null 2>&1 || true
+}
+
+cmd_mode_on() {
+  touch "$MODE_MARKER"
+  omarchy plugin enable "$PLUGIN_ID" >/dev/null 2>&1 || true
+  apply_hyprland_gnome
+  gsettings set org.gnome.desktop.wm.preferences button-layout "$GNOME_BUTTON_LAYOUT" 2>/dev/null || true
+}
+
+cmd_mode_off() {
+  rm -f "$MODE_MARKER"
+  omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1 || true
+  apply_hyprland_default
+  gsettings set org.gnome.desktop.wm.preferences button-layout "$DEFAULT_BUTTON_LAYOUT" 2>/dev/null || true
+}
+
+cmd_mode_status() {
+  if [[ -f "$MODE_MARKER" ]]; then echo "on"; else echo "off"; fi
+}
+
+cmd_mode() {
+  case "${1:-}" in
+    on) cmd_mode_on ;;
+    off) cmd_mode_off ;;
+    toggle)
+      if [[ -f "$MODE_MARKER" ]]; then cmd_mode_off; else cmd_mode_on; fi
+      ;;
+    status | get) cmd_mode_status ;;
+    *) fail "usage: omarchy-gnomarchy mode on|off|toggle|status" ;;
+  esac
+}
+
 case "${1:-}" in
   get)
     shift
@@ -161,6 +219,10 @@ case "${1:-}" in
   set-pinned)
     shift
     cmd_set_pinned "$@"
+    ;;
+  mode)
+    shift
+    cmd_mode "$@"
     ;;
   -h | --help | "")
     usage

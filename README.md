@@ -84,6 +84,58 @@ dedicated `SUPER+<key>` bind in Omarchy's default Hyprland config.
 **Known limitation**: global, not per-monitor — the "highest occupied"
 count spans every monitor, not each one independently.
 
+## GNOME mode
+
+One switch for everything in this plugin, plus the two GNOME-feel touches
+that live outside it (Hyprland tiling, GTK header-bar buttons):
+
+```bash
+omarchy-gnomarchy mode on      # enable plugin, GNOME tiling, GTK buttons
+omarchy-gnomarchy mode off     # disable plugin, revert tiling + GTK buttons
+omarchy-gnomarchy mode toggle
+omarchy-gnomarchy mode status  # prints "on" or "off"
+```
+
+Each direction touches three things together:
+
+1. **The plugin itself** — `omarchy plugin enable`/`disable emanuel.gnomarchy`
+   (both the dock panel and the workspace service, together).
+2. **Hyprland tiling** — zero gaps/borders and 12px rounding, applied live
+   via `hyprctl eval` (no `omarchy-restart-shell` needed) *and* made
+   reload-safe: presence of a marker file
+   (`~/.config/omarchy/plugins/emanuel.gnomarchy/.gnome-mode-on`) is what
+   [`extras/looknfeel-gnome.lua`](extras/looknfeel-gnome.lua)'s conditional
+   block checks, so a real Hyprland config reload respects whatever mode
+   was last set instead of always reapplying GNOME values. **One-time setup
+   required**: paste that file's content into your own
+   `~/.config/hypr/looknfeel.lua` — a plugin has no business silently
+   editing a file it doesn't own, so this one step can't be automated, but
+   `mode` fully controls it from then on.
+3. **GTK header-bar buttons** — `gsettings set
+   org.gnome.desktop.wm.preferences button-layout` flips between
+   `appmenu:minimize,maximize,close` (on) and `appmenu:close` (off, GTK's
+   own factory default). Only affects native GTK/libadwaita apps.
+
+### Also reachable from the Omarchy menu
+
+There's no packaged way for a plugin to install a menu entry for itself —
+Omarchy's menu is defined by two JSONC files merged at load,
+`default/omarchy/omarchy-menu.jsonc` (shipped) and
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` (yours), and nothing
+auto-writes to the latter. Paste this into your own extensions file for a
+`SUPER+SPACE → Trigger → Toggle → GNOME Mode` entry:
+
+```jsonc
+"trigger.toggle.gnome-mode": {"icon":"󰀻","label":"GNOME Mode",
+  "action":"omarchy-gnomarchy mode toggle"}
+```
+
+No `checked` field, matching every other `trigger.toggle.*` entry's shape —
+that category is consistently checkmark-free even for stateful toggles
+(nightlight, notifications, top-bar visibility). Verified live end to end:
+clicking it flips the plugin, Hyprland tiling, and GTK buttons together,
+instantly, no restart needed.
+
 ## Settings
 
 Dock settings only — the workspace service has none. All settings live
@@ -112,56 +164,15 @@ omarchy-gnomarchy set-pinned '<json-array-of-ids>'
 | `showAppsButton` | `true` / `false` | Show the trailing "show applications" button |
 | `pinnedApps` | JSON array of desktop-entry ids | Favorites, in order |
 
-### Also reachable from the Omarchy menu
-
-There's no packaged way for a plugin to install a menu entry for itself —
-Omarchy's menu is defined by two JSONC files merged at load,
-`default/omarchy/omarchy-menu.jsonc` (shipped) and
-`~/.config/omarchy/extensions/omarchy-menu.jsonc` (yours), and nothing
-auto-writes to the latter. Paste this into your own extensions file for a
-`SUPER+SPACE → Trigger → Toggle → Dock` entry that enables/disables the
-whole plugin (both halves — dock and workspace service together):
-
-```jsonc
-"trigger.toggle.dock": {"icon":"󰀻","label":"Dock",
-  "action":"if omarchy plugin list --json | jq -e '.[] | select(.id==\"emanuel.gnomarchy\") | .enabled' >/dev/null 2>&1; then omarchy plugin disable emanuel.gnomarchy; else omarchy plugin enable emanuel.gnomarchy; fi"}
-```
-
-No `checked` field, matching every other `trigger.toggle.*` entry's shape —
-that category is consistently checkmark-free even for stateful toggles
-(nightlight, notifications, top-bar visibility). Takes effect immediately,
-no `omarchy-restart-shell` needed (verified live: `omarchy plugin
-enable`/`disable` mounts/unmounts both the `keepLoaded` panel and service
-in the already-running shell).
-
-## Recommended extras (not automated)
-
-Two more GNOME-feel touches this plugin doesn't apply for you — a plugin
-has no business silently editing files or settings it doesn't own — but
-that go well with it:
-
-**Edge-to-edge tiling.** Paste [`extras/looknfeel-gnome.lua`](extras/looknfeel-gnome.lua)
-into your own `~/.config/hypr/looknfeel.lua` for zero gaps/borders and
-12px rounded corners.
-
-**Real minimize/maximize/close buttons on GTK apps.** GTK/libadwaita apps
-(Nautilus, GNOME Text Editor, etc.) draw their own header-bar buttons based
-on this setting:
-
-```bash
-gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:minimize,maximize,close'
-```
-
-This only affects native GTK/libadwaita apps — non-GTK windows (terminals,
-etc.) have no title bar at all on Hyprland, GTK or otherwise.
-
 ## Files
 
 - `manifest.json` — plugin manifest (`kinds: ["panel", "service"]`)
 - `Dock.qml` — the dock's UI and logic
 - `WorkspaceService.qml` — the dynamic-workspaces logic
-- `bin/omarchy-gnomarchy` — dock settings CLI, symlinked into `~/.local/bin`
-- `extras/looknfeel-gnome.lua` — optional Hyprland tiling snippet (see above)
+- `bin/omarchy-gnomarchy` — settings CLI + `mode` (GNOME mode toggle),
+  symlinked into `~/.local/bin`
+- `extras/looknfeel-gnome.lua` — Hyprland tiling snippet controlled by
+  `mode` once pasted into your own `looknfeel.lua` (see "GNOME mode" above)
 
 ## Developing this plugin
 
