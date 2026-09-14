@@ -8,3 +8,7 @@ settings.json
 *.bak.*
 *.orig
 *.rej
+
+# Compiled native Hyprland plugin - built on first `mode on` via
+# native/gnomarchy-bars/Makefile, never shipped in the repo.
+native/build/

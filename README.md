@@ -96,13 +96,15 @@ omarchy-gnomarchy mode toggle
 omarchy-gnomarchy mode status  # prints "on" or "off"
 ```
 
-Each direction touches three things together:
+Each direction touches these together:
 
 1. **The plugin itself** — `omarchy plugin enable`/`disable emanuel.gnomarchy`
    (both the dock panel and the workspace service, together).
-2. **Hyprland tiling** — zero gaps/borders and 12px rounding, applied live
-   via `hyprctl eval` (no `omarchy-restart-shell` needed) *and* made
-   reload-safe: presence of a marker file
+2. **Hyprland tiling, floating-by-default, and title-bar exceptions** — zero
+   gaps/borders, 12px rounding, every window floating by default, and a
+   `hyprbars:no_bar` window rule for apps that already draw their own title
+   bar — all applied live via `hyprctl eval` (no `omarchy-restart-shell`
+   needed) *and* made reload-safe: presence of a marker file
    (`~/.config/omarchy/plugins/emanuel.gnomarchy/.gnome-mode-on`) is what
    [`extras/looknfeel-gnome.lua`](extras/looknfeel-gnome.lua)'s conditional
    block checks, so a real Hyprland config reload respects whatever mode
@@ -111,7 +113,12 @@ Each direction touches three things together:
    `~/.config/hypr/looknfeel.lua` — a plugin has no business silently
    editing a file it doesn't own, so this one step can't be automated, but
    `mode` fully controls it from then on.
-3. **GTK header-bar buttons** — `gsettings set
+3. **The native title-bar/window-snap plugin** — built once (cached under
+   this plugin's own `native/build/`) and loaded/unloaded live via
+   `hyprctl plugin load`/`unload`. See
+   [Native title bars & window snapping](#native-title-bars--window-snapping)
+   below.
+4. **GTK header-bar buttons** — `gsettings set
    org.gnome.desktop.wm.preferences button-layout` flips between
    `appmenu:minimize,maximize,close` (on) and `appmenu:close` (off, GTK's
    own factory default). Only affects native GTK/libadwaita apps.
@@ -130,11 +137,68 @@ auto-writes to the latter. Paste this into your own extensions file for a
   "action":"omarchy-gnomarchy mode toggle"}
 ```
 
+GNOME Mode is also reachable, alongside the rest of the dock's appearance/behavior
+settings, from the [settings window](#settings-window) below.
+
 No `checked` field, matching every other `trigger.toggle.*` entry's shape —
 that category is consistently checkmark-free even for stateful toggles
 (nightlight, notifications, top-bar visibility). Verified live end to end:
 clicking it flips the plugin, Hyprland tiling, and GTK buttons together,
 instantly, no restart needed.
+
+## Native title bars & window snapping
+
+While GNOME mode is on, every window gets a real, draggable compositor title
+bar (GNOME/Windows-style) — most apps have none by default on Hyprland, since
+Hyprland (like every wlroots compositor) draws no window decoration itself;
+only GTK/libadwaita apps draw their own ("client-side decoration"). This is
+provided by vendoring the official
+[hyprbars](https://github.com/hyprwm/hyprland-plugins/tree/main/hyprbars)
+plugin's source (BSD-3-Clause, see `native/LICENSE-hyprbars` and
+`native/VENDOR.md` for the exact upstream commit pinned) under
+`native/gnomarchy-bars/vendor/`, compiled with a plain, hand-written
+`Makefile` — no `cmake`/`hyprpm` needed, just `g++`, `make`, `pkg-config`,
+and the Hyprland headers, which Omarchy's own base install already provides.
+
+**Isolation**: the compiled `gnomarchy-bars.so` lives entirely under this
+plugin's own `native/build/` directory (git-ignored, rebuilt on demand). It
+is loaded and unloaded purely via live `hyprctl plugin load`/`unload` —
+never via `hyprpm`'s usual habit of adding a `plugin =` line to
+`hyprland.conf`. No system or user Hyprland config file is ever written by
+this feature — the one exception, matching everything else in "GNOME mode",
+is the same one-time paste into your own `looknfeel.lua` you've already done
+for the tiling look, extended to also float-by-default, apply the `no_bar`
+exceptions, and reload the native plugin on a real Hyprland restart.
+
+```bash
+omarchy-gnomarchy native build   # (re)build the .so, e.g. after a Hyprland update
+omarchy-gnomarchy native status  # "built"/"not built" + "loaded"/"not loaded"
+```
+
+`mode on` builds it automatically the first time it's needed and caches an
+ABI stamp (the running `hyprctl version` string) alongside the `.so`; if a
+later `mode on` finds the stamp stale (Hyprland was updated), it rebuilds
+once and retries the load automatically.
+
+**Avoiding double title bars**: GTK/libadwaita apps already draw their own
+CSD title bar, so a maintained exceptions list turns hyprbars' bar off for
+them via a `hyprbars:no_bar` window rule, seeded from Omarchy's own default
+GTK apps — Nautilus (Files), Evince, and GNOME Disks. Extend the list by
+editing `NO_BAR_CLASSES` in `bin/omarchy-gnomarchy` (and the matching regex
+in `extras/looknfeel-gnome.lua`, for reload-survival) if you add other
+CSD-drawing apps to your own setup.
+
+**Floating by default**: while GNOME mode is on, every window floats
+instead of Hyprland's automatic dwindle tiling — this is what GNOME/Windows
+actually are, floating window managers at heart. Drag a window to a screen
+edge, corner, or the top to snap it to a half, quarter, or maximized region
+(Windows-11/GNOME-style "Aero Snap"), provided by a small module of this
+plugin's own (`native/gnomarchy-bars/patch/`) — not a fork of hyprbars
+itself, just a separate listener on Hyprland's own public window-drag-state
+API, so it stays compatible with upstream hyprbars without any merge risk.
+
+*(Drag-to-snap ships in a later update to this plugin; the title bars,
+floating-by-default, and CSD exceptions above are live today.)*
 
 ## Settings
 
@@ -163,6 +227,45 @@ omarchy-gnomarchy set-pinned '<json-array-of-ids>'
 | `hideDelayMs` | integer | Dwell time (after leaving the dock) before hiding |
 | `showAppsButton` | `true` / `false` | Show the trailing "show applications" button |
 | `pinnedApps` | JSON array of desktop-entry ids | Favorites, in order |
+
+### Settings window
+
+A gear icon at the right end of the dock (after the apps button) opens a small
+in-place settings window with toggles/steppers for `showAppsButton`, `pinned`
+("Keep dock visible"), `mode` ("Auto-hide only in fullscreen"), `iconSize`,
+`revealPx`, `hideDelayMs`, and GNOME Mode. It's a second `PanelWindow` inside
+`Dock.qml` itself (the plugin manifest only allows one file per `kind`, so it
+can't be a separate `panel` entry point) — clicking outside it or pressing
+Escape closes it. Every toggle/stepper writes through the same
+`omarchy-gnomarchy set <key> <value>` CLI calls documented above, so the
+dock's existing settings.json file-watcher picks the change up live; GNOME
+Mode instead calls `omarchy-gnomarchy mode toggle`, since it's backed by a
+marker file, not settings.json.
+
+It can also be opened without touching the dock at all:
+
+```bash
+omarchy-gnomarchy settings open
+omarchy-gnomarchy settings close
+omarchy-gnomarchy settings toggle
+```
+
+which forwards to the running shell's own IPC (`omarchy-shell shell call
+emanuel.gnomarchy <openSettings|closeSettings|toggleSettings> ''`) — the
+same mechanism other Omarchy panel plugins use to be summoned/hidden.
+`pinnedApps` isn't in the window (already handled by drag-to-reorder and the
+right-click Favorite entry), and `enabled` isn't either — it's the plugin's
+own master kill-switch, so turning it off from inside the dock would hide
+the dock (and the settings window's own gear icon) with no way back in
+without a terminal; it stays CLI-only.
+
+Reachable from the Omarchy menu the same way GNOME Mode is (see above) by
+adding this to your own `omarchy-menu.jsonc`:
+
+```jsonc
+"trigger.toggle.gnomarchy-settings": {"icon":"⚙","label":"Gnomarchy Settings",
+  "action":"omarchy-gnomarchy settings toggle"}
+```
 
 ## Files
 

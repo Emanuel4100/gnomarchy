@@ -340,6 +340,138 @@ Item {
     root.closeContextMenu();
   }
 
+  // ------------------------------------------------------------- settings
+  property bool settingsWindowOpen: false
+  // GNOME Mode lives outside settings.json (a marker file), so it can't ride
+  // the FileView watcher below - read it explicitly whenever the window opens.
+  property bool gnomeModeOn: false
+
+  function openSettings(arg) {
+    root.settingsWindowOpen = true;
+    modeStatusProc.running = true;
+  }
+  function closeSettings(arg) { root.settingsWindowOpen = false; }
+  function toggleSettings(arg) {
+    if (root.settingsWindowOpen) root.closeSettings("");
+    else root.openSettings("");
+  }
+
+  Process {
+    id: modeStatusProc
+    command: [root.binPath, "mode", "status"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.gnomeModeOn = String(text || "").trim() === "on"
+    }
+  }
+
+  Timer {
+    id: modeStatusRecheck
+    interval: 250
+    onTriggered: modeStatusProc.running = true
+  }
+
+  function setSetting(key, value) { Quickshell.execDetached([root.binPath, "set", key, String(value)]); }
+
+  function toggleGnomeMode() {
+    Quickshell.execDetached([root.binPath, "mode", "toggle"]);
+    root.gnomeModeOn = !root.gnomeModeOn;
+    modeStatusRecheck.restart();
+  }
+
+  // Small reusable controls for the settings window - no ready-made
+  // toggle/slider widgets ship in Quickshell.Widgets, and this file
+  // deliberately avoids pulling in QtQuick.Controls, so hand-roll them in
+  // the same Rectangle+MouseArea style as iconCell/appsButtonCell.
+  component SettingsToggle: Row {
+    id: toggleRoot
+    property string label: ""
+    property bool checked: false
+    signal toggled()
+    spacing: 8
+
+    Rectangle {
+      width: 36
+      height: 20
+      radius: 10
+      anchors.verticalCenter: parent.verticalCenter
+      color: toggleRoot.checked ? "#6c8cff" : "#4dffffff"
+
+      Rectangle {
+        width: 16
+        height: 16
+        radius: 8
+        color: "white"
+        anchors.verticalCenter: parent.verticalCenter
+        x: toggleRoot.checked ? parent.width - width - 2 : 2
+        Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+      }
+
+      MouseArea { anchors.fill: parent; onClicked: toggleRoot.toggled() }
+    }
+
+    Text {
+      text: toggleRoot.label
+      color: "white"
+      font.pixelSize: 12
+      anchors.verticalCenter: parent.verticalCenter
+    }
+  }
+
+  component SettingsStepper: Row {
+    id: stepperRoot
+    property string label: ""
+    property int value: 0
+    property int minValue: 0
+    property int maxValue: 999
+    property int stepBy: 1
+    signal changed(int newValue)
+    spacing: 8
+
+    Text {
+      text: stepperRoot.label
+      color: "white"
+      font.pixelSize: 12
+      width: 118
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Rectangle {
+      width: 20
+      height: 20
+      radius: 4
+      color: "#33ffffff"
+      anchors.verticalCenter: parent.verticalCenter
+      Text { anchors.centerIn: parent; text: "-"; color: "white"; font.pixelSize: 12 }
+      MouseArea {
+        anchors.fill: parent
+        onClicked: stepperRoot.changed(Math.max(stepperRoot.minValue, stepperRoot.value - stepperRoot.stepBy))
+      }
+    }
+
+    Text {
+      text: stepperRoot.value
+      color: "white"
+      font.pixelSize: 12
+      width: 32
+      horizontalAlignment: Text.AlignHCenter
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Rectangle {
+      width: 20
+      height: 20
+      radius: 4
+      color: "#33ffffff"
+      anchors.verticalCenter: parent.verticalCenter
+      Text { anchors.centerIn: parent; text: "+"; color: "white"; font.pixelSize: 12 }
+      MouseArea {
+        anchors.fill: parent
+        onClicked: stepperRoot.changed(Math.min(stepperRoot.maxValue, stepperRoot.value + stepperRoot.stepBy))
+      }
+    }
+  }
+
   // ------------------------------------------------------------ surfaces
   Variants {
     model: Quickshell.screens
@@ -416,8 +548,10 @@ Item {
             readonly property int step: root.settingsIconSize + 10
             readonly property int appsAreaWidth: Math.max(0, root.dockItems.length * step - 10)
             readonly property int appsExtra: root.settingsShowAppsButton ? (21 + root.settingsIconSize) : 0
+            readonly property int gearSize: Math.round(root.settingsIconSize * 0.6)
+            readonly property int gearExtra: 16 + gearSize
             anchors.centerIn: parent
-            width: appsAreaWidth + appsExtra
+            width: appsAreaWidth + appsExtra + gearExtra
             height: root.settingsIconSize
 
             Repeater {
@@ -495,7 +629,13 @@ Item {
                   acceptedButtons: Qt.LeftButton | Qt.RightButton
                   onClicked: function(mouse) {
                     if (mouse.button === Qt.RightButton) {
-                      root.openContextMenu(iconCell.modelData, iconCell.x + mouse.x);
+                      // iconCell.x is local to dockRow's coordinate space, not
+                      // dockWindow's (contextMenu is a direct child of
+                      // dockWindow, a sibling of card) - map through to the
+                      // window's own coordinates or the menu ends up biased
+                      // toward the left edge.
+                      var scenePoint = iconCell.mapToItem(dockWindow.contentItem, mouse.x, mouse.y);
+                      root.openContextMenu(iconCell.modelData, scenePoint.x);
                     } else {
                       root.launchOrFocus(iconCell.modelData);
                     }
@@ -535,6 +675,30 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 onClicked: root.openAppsMenu()
+              }
+            }
+
+            Rectangle {
+              id: gearCell
+              x: dockRow.appsAreaWidth + dockRow.appsExtra + 8
+              width: dockRow.gearSize
+              height: dockRow.gearSize
+              radius: 8
+              anchors.verticalCenter: parent.verticalCenter
+              color: gearMouse.containsMouse ? "#22ffffff" : "transparent"
+
+              Text {
+                anchors.centerIn: parent
+                text: "⚙"
+                color: "white"
+                font.pixelSize: dockRow.gearSize * 0.7
+              }
+
+              MouseArea {
+                id: gearMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: root.toggleSettings("")
               }
             }
           }
@@ -589,6 +753,114 @@ Item {
                   onClicked: root.runContextAction(modelData.action)
                 }
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------- settings window
+  // A single instance (not per-screen, unlike the dock surface above) since
+  // it's a modal-style dialog, not something that needs to live on every
+  // monitor at once.
+  PanelWindow {
+    id: settingsWindow
+    visible: root.settingsWindowOpen
+    color: "transparent"
+    WlrLayershell.namespace: "omarchy-gnomarchy-settings"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    exclusionMode: ExclusionMode.Ignore
+    anchors { top: true; bottom: true; left: true; right: true }
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.55)
+
+      MouseArea { anchors.fill: parent; onClicked: root.closeSettings("") }
+
+      Item {
+        anchors.fill: parent
+        focus: true
+        Keys.onEscapePressed: root.closeSettings("")
+
+        Rectangle {
+          id: settingsCard
+          anchors.centerIn: parent
+          width: 280
+          height: settingsColumn.implicitHeight + 24
+          radius: 8
+          color: "#1e1e2e"
+          border.width: 1
+          border.color: "#33ffffff"
+
+          MouseArea { anchors.fill: parent } // swallow clicks so they don't reach the scrim
+
+          Column {
+            id: settingsColumn
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 10
+
+            Text {
+              text: "Gnomarchy Settings"
+              color: "white"
+              font.bold: true
+              font.pixelSize: 13
+            }
+
+            SettingsToggle {
+              label: "Show apps button"
+              checked: root.settingsShowAppsButton
+              onToggled: root.setSetting("showAppsButton", !checked)
+            }
+
+            SettingsToggle {
+              label: "Keep dock visible"
+              checked: root.settingsPinnedOpen
+              onToggled: root.setSetting("pinned", !checked)
+            }
+
+            SettingsToggle {
+              label: "Auto-hide only in fullscreen"
+              checked: root.settingsMode === "fullscreen"
+              onToggled: root.setSetting("mode", checked ? "always" : "fullscreen")
+            }
+
+            SettingsStepper {
+              label: "Icon size"
+              value: root.settingsIconSize
+              minValue: 24
+              maxValue: 96
+              stepBy: 4
+              onChanged: (v) => root.setSetting("iconSize", v)
+            }
+
+            SettingsStepper {
+              label: "Reveal px"
+              value: root.settingsRevealPx
+              minValue: 1
+              maxValue: 16
+              stepBy: 1
+              onChanged: (v) => root.setSetting("revealPx", v)
+            }
+
+            SettingsStepper {
+              label: "Hide delay (ms)"
+              value: root.settingsHideDelayMs
+              minValue: 0
+              maxValue: 3000
+              stepBy: 100
+              onChanged: (v) => root.setSetting("hideDelayMs", v)
+            }
+
+            Rectangle { width: parent.width; height: 1; color: "#33ffffff" }
+
+            SettingsToggle {
+              label: "GNOME Mode"
+              checked: root.gnomeModeOn
+              onToggled: root.toggleGnomeMode()
             }
           }
         }

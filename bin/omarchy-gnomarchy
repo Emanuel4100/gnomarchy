@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # omarchy:summary=Configure the Gnomarchy dock, or toggle GNOME mode as a whole
-# omarchy:args=get <key> | set <key> <value> | toggle <key> | pin <desktop-id> | unpin <desktop-id> | set-pinned '<json-array>' | mode on|off|toggle|status
-# omarchy:examples=omarchy-gnomarchy get iconSize | omarchy-gnomarchy mode toggle | omarchy-gnomarchy toggle enabled
+# omarchy:args=get <key> | set <key> <value> | toggle <key> | pin <desktop-id> | unpin <desktop-id> | set-pinned '<json-array>' | mode on|off|toggle|status | settings open|close|toggle | native build|status
+# omarchy:examples=omarchy-gnomarchy get iconSize | omarchy-gnomarchy mode toggle | omarchy-gnomarchy toggle enabled | omarchy-gnomarchy settings toggle | omarchy-gnomarchy native build
 
 set -euo pipefail
 
@@ -19,6 +19,18 @@ MODE_MARKER="$PLUGIN_DIR/.gnome-mode-on"
 GNOME_BUTTON_LAYOUT="appmenu:minimize,maximize,close"
 DEFAULT_BUTTON_LAYOUT="appmenu:close"
 
+# --------------------------------------------------------- native title-bar plugin
+NATIVE_DIR="$PLUGIN_DIR/native/gnomarchy-bars"
+NATIVE_BUILD_DIR="$PLUGIN_DIR/native/build"
+NATIVE_SO="$NATIVE_BUILD_DIR/gnomarchy-bars.so"
+NATIVE_STAMP="$NATIVE_BUILD_DIR/.abi-stamp"
+
+# GTK/libadwaita apps already draw their own client-side title bar (CSD) -
+# giving them hyprbars' compositor-drawn one too would stack two bars.
+# Seeded from Omarchy's own default GTK apps (nvim is Omarchy's default text
+# editor, a terminal app, so it needs no exception).
+NO_BAR_CLASSES='^(org\\.gnome\\.Nautilus|org\\.gnome\\.NautilusPreviewer|org\\.gnome\\.Evince|org\\.gnome\\.Evince-previewer|org\\.gnome\\.DiskUtility)$'
+
 usage() {
   cat <<USAGE
 Usage: omarchy-gnomarchy <command> [args...]
@@ -31,8 +43,14 @@ Usage: omarchy-gnomarchy <command> [args...]
   set-pinned <json>      Replace pinnedApps wholesale with a JSON array of ids
   mode on|off|toggle     Flip every GNOME-feel piece together: the plugin
                          itself (dock + workspace service), edge-to-edge
-                         Hyprland tiling, and GTK header-bar buttons
+                         Hyprland tiling, GTK header-bar buttons, native
+                         title bars (built/loaded on demand), floating
+                         windows by default, and window drag-to-snap
   mode status            Print "on" or "off"
+  settings open|close|toggle
+                         Open/close/toggle the dock's settings window
+  native build           Build (or rebuild) the native title-bar/snap plugin
+  native status          Print whether it's built and loaded
 
 Scalar keys: enabled, pinned, mode, iconSize, revealPx, hideDelayMs, showAppsButton
 
@@ -158,16 +176,57 @@ cmd_set_pinned() {
 apply_hyprland_gnome() {
   hyprctl eval 'hl.config({general = {gaps_in = 0, gaps_out = 0, border_size = 0}})' >/dev/null 2>&1 || true
   hyprctl eval 'hl.config({decoration = {rounding = 12}})' >/dev/null 2>&1 || true
+  hyprctl eval 'hl.window_rule({name = "gnomarchy-float-all", match = {class = ".*"}, float = true})' >/dev/null 2>&1 || true
+  hyprctl eval "hl.window_rule({name = \"gnomarchy-no-bar\", match = {class = \"$NO_BAR_CLASSES\"}, [\"hyprbars:no_bar\"] = true})" >/dev/null 2>&1 || true
 }
 
 apply_hyprland_default() {
   hyprctl eval 'hl.config({general = {gaps_in = 5, gaps_out = 10, border_size = 2}})' >/dev/null 2>&1 || true
   hyprctl eval 'hl.config({decoration = {rounding = 0}})' >/dev/null 2>&1 || true
+  # Re-invoking the same named rule with the opposite effect value is the
+  # only reversal path the Lua config API offers for a live-injected rule
+  # (there's no window_rule_remove) - a real Hyprland restart is the only
+  # guaranteed-clean fallback if this doesn't fully take for some reason.
+  hyprctl eval 'hl.window_rule({name = "gnomarchy-float-all", match = {class = ".*"}, float = false})' >/dev/null 2>&1 || true
+  hyprctl eval "hl.window_rule({name = \"gnomarchy-no-bar\", match = {class = \"$NO_BAR_CLASSES\"}, [\"hyprbars:no_bar\"] = false})" >/dev/null 2>&1 || true
+}
+
+native_current_abi() {
+  hyprctl version 2>/dev/null | tr -d '\n'
+}
+
+native_build() {
+  mkdir -p "$NATIVE_BUILD_DIR"
+  make -C "$NATIVE_DIR" clean >/dev/null 2>&1 || true
+  make -C "$NATIVE_DIR" TARGET="$NATIVE_SO" || fail "native title-bar plugin failed to build"
+  native_current_abi >"$NATIVE_STAMP"
+}
+
+native_ensure_built() {
+  if [[ ! -f "$NATIVE_SO" || ! -f "$NATIVE_STAMP" || "$(cat "$NATIVE_STAMP")" != "$(native_current_abi)" ]]; then
+    native_build
+  fi
+}
+
+native_load() {
+  native_ensure_built
+  hyprctl plugin load "$NATIVE_SO" >/dev/null 2>&1 || true
+  if ! hyprctl plugin list 2>/dev/null | grep -q "gnomarchy-bars"; then
+    # Hyprland was updated since the last build - the plugin's ABI no
+    # longer matches the running compositor. Rebuild once and retry.
+    native_build
+    hyprctl plugin load "$NATIVE_SO" || fail "native title-bar plugin failed to load after a rebuild"
+  fi
+}
+
+native_unload() {
+  hyprctl plugin unload "$NATIVE_SO" >/dev/null 2>&1 || true
 }
 
 cmd_mode_on() {
   touch "$MODE_MARKER"
   omarchy plugin enable "$PLUGIN_ID" >/dev/null 2>&1 || true
+  native_load
   apply_hyprland_gnome
   gsettings set org.gnome.desktop.wm.preferences button-layout "$GNOME_BUTTON_LAYOUT" 2>/dev/null || true
 }
@@ -176,6 +235,7 @@ cmd_mode_off() {
   rm -f "$MODE_MARKER"
   omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1 || true
   apply_hyprland_default
+  native_unload
   gsettings set org.gnome.desktop.wm.preferences button-layout "$DEFAULT_BUTTON_LAYOUT" 2>/dev/null || true
 }
 
@@ -192,6 +252,45 @@ cmd_mode() {
       ;;
     status | get) cmd_mode_status ;;
     *) fail "usage: omarchy-gnomarchy mode on|off|toggle|status" ;;
+  esac
+}
+
+# --------------------------------------------------------------- native title-bar plugin
+
+cmd_native_status() {
+  if [[ -f "$NATIVE_SO" && -f "$NATIVE_STAMP" ]]; then
+    if [[ "$(cat "$NATIVE_STAMP")" == "$(native_current_abi)" ]]; then
+      echo "built (up to date)"
+    else
+      echo "built (stale - Hyprland was updated, will rebuild on next 'mode on')"
+    fi
+  else
+    echo "not built"
+  fi
+  if hyprctl plugin list 2>/dev/null | grep -q "gnomarchy-bars"; then
+    echo "loaded"
+  else
+    echo "not loaded"
+  fi
+}
+
+cmd_native() {
+  case "${1:-}" in
+    build) native_build ;;
+    status) cmd_native_status ;;
+    *) fail "usage: omarchy-gnomarchy native build|status" ;;
+  esac
+}
+
+# --------------------------------------------------------------- settings window
+
+cmd_settings() {
+  local action="${1:-toggle}"
+  case "$action" in
+    open) omarchy-shell -q shell call "$PLUGIN_ID" openSettings '' ;;
+    close) omarchy-shell -q shell call "$PLUGIN_ID" closeSettings '' ;;
+    toggle) omarchy-shell -q shell call "$PLUGIN_ID" toggleSettings '' ;;
+    *) fail "usage: omarchy-gnomarchy settings open|close|toggle" ;;
   esac
 }
 
@@ -223,6 +322,14 @@ case "${1:-}" in
   mode)
     shift
     cmd_mode "$@"
+    ;;
+  settings)
+    shift
+    cmd_settings "$@"
+    ;;
+  native)
+    shift
+    cmd_native "$@"
     ;;
   -h | --help | "")
     usage
